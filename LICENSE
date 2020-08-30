@@ -1,6 +1,6 @@
-The files with names in the pattern Lem*.thy, excluding Lem.thy and LemExtraDefs.thy in the util directory are distributed under the terms in [util/lem-license]. 
+The files with names in the pattern Lem*.thy, excluding Lem.thy and LemExtraDefs.thy in the utils directory are distributed under the terms in [util/lem-license]. 
 
-The files with names not in the pattern Lem*.thy in the util directory are distributed under Apache License Version 2.0, as in [util/apache-license]. 
+The files with names not in the pattern Lem*.thy in the utils directory are distributed under Apache License Version 2.0, as in [util/apache-license]. 
 
 All the other files are distributed under the GNU LGPLv3. 
 
