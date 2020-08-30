@@ -20,7 +20,6 @@ theory "Syntax"
 imports 
   Main
   "$ISABELLE_HOME/src/HOL/Word/Word"
-  (*"./utils/Keccak"  *)
 
 begin 
  
@@ -49,9 +48,6 @@ datatype lit_content =
 
 datatype literal = 
   Literal "lit_content" "type_name"            ("(_ :L _)" [100, 100] 100)
-
-datatype dollar = Dollar ("$") 
-type_synonym dollars = "dollar list"
 
 datatype 
     block = Blk "expr list"                     ("BEGIN/ _/ END" [60] 60)
