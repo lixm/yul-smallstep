@@ -15,7 +15,7 @@ Library General Public License for more details.
 
 theory "Typing"
 
-imports Main Syntax LMap  
+imports Main LMap Syntax  
 
 begin
 
@@ -68,11 +68,11 @@ fun size_of_expr :: "expr \<Rightarrow> nat" and
   "size_of_expr (EFunDef f pts rts blk) = 1 + size_of_blk blk" |
   "size_of_expr (EVarDecl txs e) = 2 + (length txs) + size_of_expr e" |
   "size_of_expr (EEmptyVarDecl txs) = 1" | 
-  "size_of_expr (EAssg xs e) = 1 + (length xs) + size_of_expr e" | 
+  "size_of_expr (EAssg xs e) = 2 + (length xs) + size_of_expr e" | 
   "size_of_expr (EIf e blk) = 1 + size_of_expr e + size_of_blk blk" |
   "size_of_expr (ECond e blk) = 1 + size_of_expr e + size_of_blk blk" |
   "size_of_expr (ESwitch e cases blk_opt) = 
-    1 + size_of_expr e + sum_list (map (size_of_blk \<circ> snd) cases) + 
+    2 + size_of_expr e + sum_list (map (size_of_blk \<circ> snd) cases) + 
     (case blk_opt of (Some blk0) \<Rightarrow> size_of_blk blk0 | _ \<Rightarrow> 0)
     " | 
   "size_of_expr (EFor blk1 e blk2 blk) =
@@ -249,11 +249,11 @@ fun not_elist :: "expr \<Rightarrow> bool" where
     These variables cannot be used in the function defined, nor can they be re-declared. 
 *)
 function (sequential) 
-    es_type :: "type_env \<Rightarrow> id0 set \<Rightarrow> ftype_env \<Rightarrow> expr list \<Rightarrow> (bool\<times>type_env)" and 
+    type_es :: "type_env \<Rightarrow> id0 set \<Rightarrow> ftype_env \<Rightarrow> expr list \<Rightarrow> (bool\<times>type_env)" and 
     type_b :: "type_env \<Rightarrow> id0 set \<Rightarrow> ftype_env \<Rightarrow> block \<Rightarrow> bool" and
     type_e :: "type_env \<Rightarrow> id0 set \<Rightarrow> ftype_env \<Rightarrow> expr \<Rightarrow> expr_type_res"
 where 
-  "es_type vte xs fte es = 
+  "type_es vte xs fte es = 
     foldl (\<lambda>acc e. 
             (if (fst acc) then 
               (case type_e (snd acc) xs fte e of 
@@ -262,7 +262,7 @@ where
               acc)) 
           (True, vte) es" |
 
-  "type_b vte xs fte (Blk es) = (case (es_type vte xs fte es) of (b, vte') \<Rightarrow> b)" |
+  "type_b vte xs fte (Blk es) = (case (type_es vte xs fte es) of (b, vte') \<Rightarrow> b)" |
   
   "type_e vte xs fte (EId x) = 
     (case (lm_get vte x) of Some (VType tn) \<Rightarrow> ETypable (DataType [tn]) vte | _ \<Rightarrow> EUntypable)" |
@@ -465,7 +465,7 @@ where
         case get_a_func_types es1 of \<comment> \<open>forbit function definition inside the init block\<close>
           Some [] \<Rightarrow> (
           \<comment> \<open> variables in the outer scope can all be used in blk1 \<close>
-          case (es_type vte xs fte es1) of
+          case (type_es vte xs fte es1) of
             (True, vte') \<Rightarrow> (
             case (type_e vte' xs fte e) of
                ETypable (DataType [Bool]) vte'' \<Rightarrow> (

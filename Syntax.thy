@@ -18,6 +18,7 @@ theory "Syntax"
 imports 
   Main
   "$ISABELLE_HOME/src/HOL/Word/Word"
+  (*"./utils/Keccak"  *)
 
 begin 
  
@@ -45,14 +46,14 @@ datatype lit_content =
 
 
 datatype literal = 
-  Literal "lit_content" "type_name"             ("(_ :L _)" [100, 100] 100)
+  Literal "lit_content" "type_name"            ("(_ :L _)" [100, 100] 100)
 
 datatype 
     block = Blk "expr list"                     ("BEGIN/ _/ END" [60] 60)
 and expr =
     EId id0                                     ("ID _" [0] 1000)
-  | ELit literal                                ("LIT _" [0] 1000)
-  | EFunCall id0 "expr list"                    ("CALL _/ _" [1000, 62] 62)
+  | ELit literal                            ("LIT _" [0] 1000)
+  | EFunCall id0 "expr list"                ("CALL _/ _" [1000, 62] 62)
   | EFunDef id0 "(id0 * type_name) list" "(id0 * type_name) list" block  
                                                 ("FUN _/ _/ _ IS/ _" [1000, 61, 61] 61)
   | EVarDecl "(id0 * type_name) list" expr      ("VAR _ ::-/ _" [0, 61] 61)

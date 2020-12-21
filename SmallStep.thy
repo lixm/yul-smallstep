@@ -13,7 +13,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 Library General Public License for more details.
 ******)
 
-theory "SmallStep"
+theory "SmallStep" 
                                     
 imports Syntax Typing "./utils/Keccak"
 
@@ -116,6 +116,25 @@ datatype ectx =
   | ECCond hole block
   | ECSwitch hole "(literal * block) list" "block option"
 
+fun size_of_ectx :: "ectx \<Rightarrow> nat" where 
+  "size_of_ectx (ECFunCall f es Hole lits) = 1 + size_of_es es + length lits" | 
+  "size_of_ectx (ECVarDecl txs Hole) = 2 + length txs" | 
+  "size_of_ectx (ECAssg xs Hole) = 2 + (length xs)" | 
+  "size_of_ectx (ECCond Hole blk) = 1 + size_of_blk blk" |
+  "size_of_ectx (ECSwitch Hole cs blk_opt) = 2 + sum_list (map (size_of_blk \<circ> snd) cs) + 
+    (case blk_opt of (Some blk0) \<Rightarrow> size_of_blk blk0 | _ \<Rightarrow> 0)"
+
+lemma size_of_blk_ge_1: "size_of_blk blk \<ge> 1" 
+  apply(cases "blk" rule: size_of_blk.cases) by simp_all
+
+lemma size_of_ectx_ge_2: "size_of_ectx ec \<ge> 2" 
+  apply(cases "ec" rule: size_of_ectx.cases)
+      apply(simp_all)
+  using size_of_blk_ge_1 by auto
+
+lemma size_of_expr_ge_1: "size_of_expr e \<ge> 1" 
+  apply(cases "e" rule: size_of_expr.cases) by simp_all
+
 type_synonym lstate = "literal list_map"
 
 type_synonym fstate = "fvalue list_map"
@@ -130,17 +149,18 @@ datatype lstack_frame =
 type_synonym lstack = "lstack_frame list" 
 type_synonym address = "160 word"
 
+definition size_of_lstk :: "lstack \<Rightarrow> nat" where 
+  "size_of_lstk lstk = 
+    (sum_list (map (\<lambda>lfrm. (
+          case lfrm of 
+            (LFrm_E (e, ls, fs)) \<Rightarrow> size_of_expr e 
+          | (LFrm_B (blk, ls, fs, cf)) \<Rightarrow> size_of_blk blk)) 
+        lstk))"
+
 record log = 
   address_of :: address 
   args_of :: "(256 word) list" 
   mem_frag_of :: "(8 word) list"
-
-(*
-record trans_effect = 
-  refund_of :: "256 word" \<comment> \<open>refund balance\<close>
-  logs_of :: "log list" 
-  suicides_of :: "address set" 
-*)
 
 record account = 
   code_of :: "block option"
@@ -178,9 +198,15 @@ datatype gstack_frame =
     GFrmNormal lstack gstate call_kind
   | GFrmExc call_kind
   | GFrmHalt gstate "(8 word) list" call_kind
-  | GFrmCounterErr
 
-type_synonym gstack = "(gstack_frame) list" 
+type_synonym gstack = "(gstack_frame) list"
+
+definition size_of_gstk :: "gstack \<Rightarrow> nat" where 
+  "size_of_gstk gstk = (
+     case (hd gstk) of 
+       GFrmNormal lstk gs ck \<Rightarrow> size_of_lstk lstk
+     | _ \<Rightarrow> 0
+   )"
 
 record blk_header = 
   pheader_hash_of :: "256 word" 
@@ -241,20 +267,6 @@ fun hfill_e :: "ectx \<Rightarrow> expr \<Rightarrow> expr" where
     |_ \<Rightarrow> ESwitch e brs blk_opt
   )"
 
-(* THIS DEFINITION CAUSES ILL-FORMED ECond and ESwitch WITH ELIST IN THE CONDITIONAL PART 
-   TO BE GENERATED, WHEN THERE ARE FUNCTION CALLS IN THE CONDITIONAL PART OF THESE CONSTRUCTS
-fun hfill_e :: "ectx \<Rightarrow> expr \<Rightarrow> expr" where 
-  "hfill_e (ECFunCall f el Hole ll) e = (
-    case e of 
-      (EList es) \<Rightarrow> EImFunCall f (el @ es @ (map EImLit ll)) 
-    | _ \<Rightarrow> EImFunCall f (el @ [e] @ (map EImLit ll))
-  )" |
-  "hfill_e (ECVarDecl xs Hole) e = EVarDecl xs e" | 
-  "hfill_e (ECAssg xs Hole) e = EAssg xs e" |
-  "hfill_e (ECCond Hole blk) e = (ECond e blk)" |
-  "hfill_e (ECSwitch Hole brs blk_opt) e = ESwitch e brs blk_opt"
-*)
-
 (* well-typedness assumed of contract for which the function is used *)
 fun get_func_values :: "block \<Rightarrow> fvalue list_map" where 
   "get_func_values (Blk []) = []" | 
@@ -286,10 +298,59 @@ value "lst_find_idx [[0] ::= EImLit (TL:LBool), EImLit ((NL 3):L U256),
                     EImLit (FL:LBool)] 
        (\<lambda>e. case e of EImLit _ \<Rightarrow> True | _ \<Rightarrow> False)"
 
-value "take 3 [1::nat, 2, 3, 3, 2]"
-value "take 4 [0::nat,1,5,2,4,4]"
-value "drop 2 [1::nat, 2, 3, 3, 2]"
-value "drop 5 [1::nat, 2, 3, 3, 2]"
+lemma lst_find_idx0_fst: "f a \<Longrightarrow> (lst_find_idx0 idx0 (a # lst) f = (idx0, True))"
+  apply(induct lst arbitrary: idx0) using lst_find_idx0_def 
+  by (simp_all add: lst_find_idx0_def)
+
+lemma lst_find_idx0_le: "lst_find_idx0 idx0 lst f = (idx, True) \<Longrightarrow> idx0 \<le> idx" 
+proof(induct lst arbitrary: idx0)
+  case Nil
+  then show ?case by (simp add: lst_find_idx0_def)
+next
+  case (Cons a lst)
+  then show ?case 
+  proof(cases "f a")
+    case True
+    then show ?thesis using lst_find_idx0_fst using Cons.prems by fastforce
+  next
+    case False
+    hence "lst_find_idx0 idx0 (a # lst) f = lst_find_idx0 (idx0+1) lst f" 
+      by (simp add: lst_find_idx0_def)
+    hence "idx0 + 1 \<le> idx" using "Cons.prems" by (simp add: Cons.hyps)
+    then show ?thesis by auto
+  qed 
+qed
+
+lemma lst_find_idx0_tail: 
+  "\<lbrakk> (\<not> f a); lst_find_idx0 idx0 (a # lst) f = (idx, True) \<rbrakk> \<Longrightarrow> idx0 < idx"
+proof-
+  assume H_n_fa: "(\<not> f a)"
+  assume H_lst_find_idx0: "lst_find_idx0 idx0 (a # lst) f = (idx, True)"
+  have H: "lst_find_idx0 idx0 (a # lst) f = lst_find_idx0 (idx0 + 1) lst f" 
+    by (simp add: H_n_fa lst_find_idx0_def)
+  hence "idx0 + 1 \<le> idx" using H_lst_find_idx0 by (simp add: lst_find_idx0_le)
+  thus ?thesis by auto
+qed 
+
+lemma lst_find_idx0_bound: "lst_find_idx0 idx0 lst f = (idx, True) \<Longrightarrow> idx - idx0 < length lst"  
+proof(induct lst arbitrary: idx0)
+  case Nil
+  then show ?case by (simp add: lst_find_idx0_def)
+next
+  case (Cons a lst)
+  then show ?case 
+  proof(cases "f a")
+    case True
+    hence "idx = idx0" using lst_find_idx0_fst using Cons.prems by fastforce
+    then show ?thesis by simp
+  next
+    case False
+    hence "lst_find_idx0 idx0 (a # lst) f = lst_find_idx0 (idx0 + 1) lst f" 
+      by (simp add: lst_find_idx0_def)
+    hence "idx - (idx0 + 1) < length lst" using "Cons.hyps" by (simp add: Cons.prems)    
+    then show ?thesis by auto
+  qed 
+qed
 
 fun aggr_ls :: "lstack \<Rightarrow> literal list_map" where 
   "aggr_ls ((LFrm_B (b, ls, fs, None)) # lstk') = (aggr_ls lstk') @ ls" |
@@ -1538,13 +1599,110 @@ definition is_lit_expr where "is_lit_expr e = (case e of (EImLit _) \<Rightarrow
 definition wrap_with_lit where 
   "wrap_with_lit e = (case e of (EImLit lit) \<Rightarrow> lit | _ \<Rightarrow> ((NL 0) :L U256))"
 
+lemma sum_list_expr: 
+  "\<lbrakk> xa < length es \<rbrakk> \<Longrightarrow> 
+     size_of_expr (es ! (length es - Suc xa)) +
+      sum_list (map size_of_expr (take (length es - Suc xa) es))
+     = sum_list (map size_of_expr (take (length es - xa) es))"
+proof(induct es arbitrary: xa)
+  case Nil
+  then show ?case by auto
+next
+  case (Cons a es)
+  assume IH: "(\<And>xa. xa < length es \<Longrightarrow>
+            size_of_expr (es ! (length es - Suc xa)) +
+            sum_list (map size_of_expr (take (length es - Suc xa) es)) =
+            sum_list (map size_of_expr (take (length es - xa) es)))"
+  assume "xa < length (a # es)"
+  hence "xa < length es \<or> xa = length es" by auto
+  thus ?case 
+  proof
+    assume H_xa_lt_len: "xa < length es"
+    have "map size_of_expr (take (Suc (length es) - xa) (a # es)) = 
+          (size_of_expr a) # (map size_of_expr (take ((length es) - xa) (es)))" 
+      by (metis Cons.prems Suc_diff_Suc diff_Suc_Suc length_Cons list.simps(9) take_Suc_Cons)
+    hence H1: "sum_list (map size_of_expr (take (Suc (length es) - xa) (a # es)))
+               = size_of_expr a + sum_list (map size_of_expr (take ((length es) - xa) es))"
+      by auto
+    have "(map size_of_expr (take (length es - xa) (a # es))) =
+            (size_of_expr a) # (map size_of_expr (take (length es - Suc xa) es))"
+      using H_xa_lt_len 
+      by (metis (full_types) Suc_diff_Suc list.simps(9) take_Suc_Cons)
+    hence H2: "sum_list (map size_of_expr (take (length es - xa) (a # es))) = 
+            size_of_expr a + sum_list (map size_of_expr (take (length es - Suc xa) es))"
+      by auto
+    have H3: "size_of_expr ((a # es) ! (length es - xa)) = size_of_expr (es ! (length es - Suc xa))" 
+      using H_xa_lt_len by simp
+    show ?case
+      apply (simp add: H1 H2 H3) using IH H_xa_lt_len by blast
+  next
+    assume "xa = length es" 
+    thus ?case by simp
+  qed
+qed  
+
+lemma lt_sum_list: 
+  "\<lbrakk> xa < length es; \<forall>j. j < length es \<longrightarrow> size_of_expr (es!j) \<ge> 1\<rbrakk> \<Longrightarrow> 
+        xa \<le> sum_list (map size_of_expr (drop (length es - xa) es))"
+proof(induct xa)
+  case 0
+  then show ?case by simp
+next
+  case (Suc xa)
+  assume IH: 
+      "(xa < length es \<Longrightarrow>
+           \<forall>j<length es. 1 \<le> size_of_expr (es ! j) \<Longrightarrow>
+           xa \<le> sum_list (map size_of_expr (drop (length es - xa) es)))" 
+  assume "Suc xa < length es"
+  hence H: "xa < length es" by auto 
+  assume H_rgn: "\<forall>j<length es. 1 \<le> size_of_expr (es ! j)"
+  hence HH: "xa \<le> sum_list (map size_of_expr (drop (length es - xa) es))" using H IH by auto
+  have "drop (length es - Suc xa) es = (es ! (length es - Suc xa)) # (drop (length es - xa) es)"
+    by (metis Cons_nth_drop_Suc H Suc.prems(1) Suc_diff_Suc Suc_less_eq2 diff_less zero_less_Suc)
+  hence H_simp: 
+        "sum_list (map size_of_expr (drop (length es - Suc xa) es)) = 
+          size_of_expr (es ! (length es - Suc xa)) + 
+          sum_list (map size_of_expr (drop (length es - xa) es))" 
+    by simp
+  have H_size1: "size_of_expr (es ! (length es - Suc xa)) \<ge> 1" using H_rgn 
+    using size_of_expr_ge_1 by auto
+  show ?case using HH H_simp H_size1 
+    by linarith
+qed
+
+lemma arg_list_sizes_sum: 
+  "\<lbrakk> xa < length es; \<forall>j. j < length es \<longrightarrow> size_of_expr (es!j) \<ge> 1 \<rbrakk> \<Longrightarrow> 
+    size_of_expr (es ! (length es - Suc xa)) +
+      (sum_list (map size_of_expr (take (length es - Suc xa) es)) + xa)
+    \<le> sum_list (map size_of_expr es)"
+proof-
+  assume H_xa_lt_len: "xa < length es"
+  assume H_size_expr: "\<forall>j. j < length es \<longrightarrow> size_of_expr (es!j) \<ge> 1"
+  have H_simp: 
+      "size_of_expr (es ! (length es - Suc xa)) +
+        (sum_list (map size_of_expr (take (length es - Suc xa) es)) + xa)
+        = (sum_list (map size_of_expr (take (length es - xa) es))) + xa" 
+    using H_xa_lt_len sum_list_expr by simp
+  have "take (length es - xa) es @ drop (length es - xa) es = es" 
+    using H_xa_lt_len by auto
+  hence H_sum: 
+          "sum_list (map size_of_expr (take (length es - xa) es)) + 
+            sum_list (map size_of_expr (drop (length es - xa) es)) 
+         = sum_list (map size_of_expr es)"
+    by (metis map_append sum_list.append)
+  show ?thesis
+    apply(simp add: H_simp flip: H_sum)
+    using H_size_expr lt_sum_list 
+    using H_xa_lt_len by blast
+qed
+
 function (sequential, domintros) 
-  step :: "trans_env \<Rightarrow> gstack \<Rightarrow> nat \<Rightarrow> gstack"  and 
-  step_ctx :: "trans_env \<Rightarrow> expr \<Rightarrow> ectx \<Rightarrow> gstack \<Rightarrow> nat \<Rightarrow> gstack" where
+  step :: "trans_env \<Rightarrow> gstack \<Rightarrow> gstack"  and 
+  step_ctx :: "trans_env \<Rightarrow> expr \<Rightarrow> ectx \<Rightarrow> gstack \<Rightarrow> gstack" where
 
   (* a step of ec[e] -- the context ec filled with the expression e *)
-  "step_ctx tre e ec [GFrmNormal (LFrm_E (_, ls, fs) # lstk') gs ck] (Suc n) = (
-    case (step tre [(GFrmNormal (LFrm_E (e, ls, fs) # lstk') gs ck)]) n of
+  "step_ctx tre e ec [GFrmNormal (LFrm_E (_, ls, fs) # lstk') gs ck] = (
+    case (step tre [(GFrmNormal (LFrm_E (e, ls, fs) # lstk') gs ck)]) of
       [GFrmNormal (LFrm_E (e', ls', fs') # lstk') gs' ck'] \<Rightarrow> 
         [GFrmNormal (LFrm_E (hfill_e ec e', ls', fs') # lstk') gs' ck']
     | [GFrmNormal ((LFrm_B (b, ls', fs', cf)) # (LFrm_E (e', ls, fs)) # lstk') gs ck] \<Rightarrow> 
@@ -1553,43 +1711,39 @@ function (sequential, domintros)
     | [GFrmExc ck] \<Rightarrow> [GFrmExc ck]
     | gfrm # [(GFrmNormal (LFrm_E (e', ls, fs) # lstk') gs ck)] \<Rightarrow> 
       gfrm # [GFrmNormal ((LFrm_E (hfill_e ec e', ls, fs)) # lstk') gs ck]
-    | [GFrmCounterErr] \<Rightarrow> [GFrmCounterErr]
     | _ \<Rightarrow> []
   )" | 
-  "step_ctx _ _ _ _ 0 = [GFrmCounterErr]" | 
-  "step_ctx _ _ _ _ _ = []" |
+  "step_ctx _ _ _ _ = []" |
 
-  "step tre _ 0 = [GFrmCounterErr]" |
-
-  "step tre [GFrmNormal (LFrm_E (GJUMPDEST, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (GJUMPDEST, ls, fs) # lstk') gs ck] = ( 
         if (valid_gas_cost (gas_of gs) 1) 
         then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 1)\<rparr> in
             [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs' ck]
          )
         else [GFrmExc ck]
      )" | 
-  "step tre [GFrmNormal (LFrm_E (GJUMP, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (GJUMP, ls, fs) # lstk') gs ck] = ( 
         if (valid_gas_cost (gas_of gs) 8) 
         then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 8)\<rparr> in
             [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs' ck]
          )
         else [GFrmExc ck]
      )" | 
-  "step tre [GFrmNormal (LFrm_E (GPUSH, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (GPUSH, ls, fs) # lstk') gs ck] = ( 
         if (valid_gas_cost (gas_of gs) 3) 
         then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 3)\<rparr> in
             [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs' ck]
          )
         else [GFrmExc ck] 
      )" |
-  "step tre [GFrmNormal (LFrm_E (GSWAP, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (GSWAP, ls, fs) # lstk') gs ck] = ( 
         if (valid_gas_cost (gas_of gs) 3) 
         then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 3)\<rparr> in
             [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs' ck]
          )
         else [GFrmExc ck]
      )" |
-  "step tre [GFrmNormal (LFrm_E (GPOP, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (GPOP, ls, fs) # lstk') gs ck] = ( 
         if (valid_gas_cost (gas_of gs) 2) 
         then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 2)\<rparr> in
             [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs' ck]
@@ -1597,7 +1751,7 @@ function (sequential, domintros)
         else [GFrmExc ck]
      )" | 
 
-  "step tre [GFrmNormal (LFrm_E (EId x, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (EId x, ls, fs) # lstk') gs ck] = ( 
     case (lm_get ((aggr_ls lstk') @ ls) x) of 
       Some lit \<Rightarrow> (if (valid (gas_of gs) 3 ((ct_of gs)+1))
                     then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 3),
@@ -1608,7 +1762,7 @@ function (sequential, domintros)
                  ) 
     | _ \<Rightarrow> []
   )" | 
-  "step tre [GFrmNormal (LFrm_E (ELit lit, ls, fs) # lstk') gs ck] (Suc n) = ( 
+  "step tre [GFrmNormal (LFrm_E (ELit lit, ls, fs) # lstk') gs ck] = ( 
       if (valid (gas_of gs) 3 ((ct_of gs)+1)) 
       then ( let gs' = gs\<lparr>gas_of := (gas_of gs)-(word_of_int 3),
                           ct_of := (ct_of gs) + 1\<rparr> in
@@ -1616,10 +1770,10 @@ function (sequential, domintros)
        )
       else [GFrmExc ck]
    )" | 
-  "step tre [GFrmNormal (LFrm_E (FUN f pl rl IS blk, ls, fs) # lstk') gs ck] (Suc n) = 
+  "step tre [GFrmNormal (LFrm_E (FUN f pl rl IS blk, ls, fs) # lstk') gs ck] = 
       [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck]
     " |
-  "step tre [GFrmNormal (LFrm_E (ECond e blk, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (ECond e blk, ls, fs) # lstk') gs ck] = (
      case e of
       (EImLit (TL :L Bool)) \<Rightarrow> 
         if (valid (gas_of gs) (3+3+10) (ct_of gs)) 
@@ -1637,15 +1791,15 @@ function (sequential, domintros)
          else [GFrmExc ck]
     | _ \<Rightarrow> (
         step_ctx tre e (ECCond (Hole) blk)  
-          [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] n
+          [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] 
       )
     )
   " |
-  "step tre [GFrmNormal (LFrm_E (IF e THEN blk, ls, fs) # lstk') gs ck] (Suc n) = 
+  "step tre [GFrmNormal (LFrm_E (IF e THEN blk, ls, fs) # lstk') gs ck] = 
     [GFrmNormal (LFrm_E (ECond e (concat_blk_es blk [GJUMPDEST]), ls, fs) # lstk') gs ck]
   " |
   "step tre 
-    [GFrmNormal (LFrm_E (SWITCH e CASES cases DEFAULT blk_opt, ls, fs) # lstk') gs ck] (Suc n) 
+    [GFrmNormal (LFrm_E (SWITCH e CASES cases DEFAULT blk_opt, ls, fs) # lstk') gs ck]
    = (
        let sz_cases = (size cases) in 
           case e of 
@@ -1697,9 +1851,9 @@ function (sequential, domintros)
             )
           | _ \<Rightarrow> 
             step_ctx tre e (ECSwitch Hole cases blk_opt) 
-                            [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] (Suc n)
+                            [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck]
   )" | 
-  "step tre [GFrmNormal (LFrm_E (FOR blk0 e blk1 blk, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (FOR blk0 e blk1 blk, ls, fs) # lstk') gs ck] = (
       case blk0 of 
         BEGIN es0 END \<Rightarrow> (
          [GFrmNormal (LFrm_B (Blk (es0 @ [GJUMPDEST] @ [(ECond e (
@@ -1712,7 +1866,7 @@ function (sequential, domintros)
         )
     )
   " | 
-  "step tre [GFrmNormal (LFrm_E (xs ::= e, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (xs ::= e, ls, fs) # lstk') gs ck] = (
     case e of 
       EImLit lit \<Rightarrow> (
         let new_lstk = upd_var_in_lstack (LFrm_E (STOP, ls, fs) # lstk') (xs!0) lit in
@@ -1736,10 +1890,10 @@ function (sequential, domintros)
         else [GFrmExc ck]
       )
     | _ \<Rightarrow> 
-      step_ctx tre e (ECAssg xs Hole) [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] (Suc n) 
+      step_ctx tre e (ECAssg xs Hole) [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck]
   )
   "  |
-  "step tre [GFrmNormal (LFrm_E ((VAR txs ::- e), ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E ((VAR txs ::- e), ls, fs) # lstk') gs ck] = (
     case e of 
       EImLit lit \<Rightarrow> [GFrmNormal (LFrm_E (STOP, ls @ [(fst (txs!0), lit)], fs) # lstk') gs ck]
     | EList es \<Rightarrow> (
@@ -1747,10 +1901,10 @@ function (sequential, domintros)
           [GFrmNormal (LFrm_E (STOP, ls @ (zip (map fst txs) lits), fs) # lstk') gs ck]
       )
     | _ \<Rightarrow> 
-      step_ctx tre e (ECVarDecl txs Hole) [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] (Suc n)
+      step_ctx tre e (ECVarDecl txs Hole) [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck]
   )
   " |
-  "step tre [GFrmNormal (LFrm_E (VAR txs, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (VAR txs, ls, fs) # lstk') gs ck] = (
     let zeros = map (\<lambda>(x, t). (if t=Bool then ((FL) :L Bool) else ((NL 0) :L U256))) txs in 
     let txs_size = int (size txs) in 
        if (valid (gas_of gs) (3 * (nat txs_size)) ((ct_of gs)+(nat txs_size)))
@@ -1760,7 +1914,7 @@ function (sequential, domintros)
           )
        else [GFrmExc ck]
   )" |
-  "step tre [GFrmNormal (LFrm_E (CALL f es, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (CALL f es, ls, fs) # lstk') gs ck] = (
     if (f \<notin> lm_dom builtin_ctx) \<and> (valid (gas_of gs) 3 (ct_of gs)) then (
       let gs' = gs \<lparr> gas_of := (gas_of gs) - 3 \<rparr> in 
       [GFrmNormal (LFrm_E (EImFunCall f es, ls, fs) # lstk') gs' ck]
@@ -1771,14 +1925,14 @@ function (sequential, domintros)
         [GFrmExc ck]
     )
   )" |
-  "step tre [GFrmNormal (LFrm_E (EImFunCall f es, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (EImFunCall f es, ls, fs) # lstk') gs ck] = (
       let (idx, found) = lst_find_idx (rev es) is_lit_expr in
       (
         if found then (
           step_ctx 
           tre (es!(length es - idx - 1)) 
             (ECFunCall f (take (length es-idx-1) es) Hole (map peel (drop (length es - idx) es)))
-            [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] (Suc n)
+            [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck]
         )
         else ( 
           case lm_get ((aggr_fs (LFrm_E (EImFunCall f es, ls, fs) # lstk')) @ builtin_ctx) f of 
@@ -1842,10 +1996,10 @@ function (sequential, domintros)
     )
   " |
 
-  "step tre ((GFrmNormal (LFrm_B (BEGIN es END, ls, fs, fg) # lstk') gs ck) # gstk') (Suc n) = (
+  "step tre ((GFrmNormal (LFrm_B (BEGIN es END, ls, fs, fg) # lstk') gs ck) # gstk') = (
     case es of 
       e # es' \<Rightarrow> (
-        case (step tre [(GFrmNormal (LFrm_E (e, ls, fs) # lstk') gs ck)] n) of 
+        case (step tre [(GFrmNormal (LFrm_E (e, ls, fs) # lstk') gs ck)]) of 
           [(GFrmNormal (LFrm_E (e', ls', fs') # lstk') gs' ck')] \<Rightarrow> (
             ((GFrmNormal (LFrm_B (BEGIN (if e' = STOP then es' else e'#es') END, 
                                   ls', fs', fg)
@@ -1906,7 +2060,7 @@ function (sequential, domintros)
         )
    )" |
 
-  "step tre ((GFrmHalt gs' ret_data ck') # gstk') (Suc n) = (
+  "step tre ((GFrmHalt gs' ret_data ck') # gstk') = (
     case gstk' of 
       _ # _ \<Rightarrow> (
         case ck' of 
@@ -1920,7 +2074,7 @@ function (sequential, domintros)
   "step tre 
     (GFrmExc (CKCall g to val io is oo os) 
      # (GFrmNormal (LFrm_B (blk, ls, fs, cf) # lstk') gs ck) 
-     # gstk') (Suc n) = (
+     # gstk') = (
     let naws = ext_mem_sz (ext_mem_sz (naws_of gs) io is) oo os in 
     ((GFrmNormal 
         (LFrm_B (blk_fill_bool blk False, ls, fs, cf) # lstk') 
@@ -1930,7 +2084,7 @@ function (sequential, domintros)
   "step tre 
     (GFrmExc (CKDelCall g to io is oo os)
       # (GFrmNormal (LFrm_B (blk, ls, fs, cf) # lstk') gs ck)
-        # gstk')  (Suc n) = (
+        # gstk') = (
     let naws = ext_mem_sz (ext_mem_sz (naws_of gs) io is) oo os in 
     ((GFrmNormal 
         (LFrm_B (blk_fill_bool blk False, ls, fs, cf) # lstk') 
@@ -1940,36 +2094,91 @@ function (sequential, domintros)
   "step tre 
     (GFrmExc (CKCallCode g to val io is oo os) 
      #(GFrmNormal (LFrm_B (blk, ls, fs, cf) # lstk') gs ck) 
-     # gstk') (Suc n)  = (
+     # gstk') = (
     let naws = ext_mem_sz (ext_mem_sz (naws_of gs) io is) oo os in 
     ((GFrmNormal 
         (LFrm_B (blk_fill_bool blk False, ls, fs, cf) # lstk') 
         (gs \<lparr> naws_of := naws \<rparr>) ck) 
      # gstk'))
   " |
-  "step tre [GFrmExc ck] (Suc n) = [GFrmExc ck]" |
+  "step tre [GFrmExc ck] = [GFrmExc ck]" |
 
-  "step tre [GFrmNormal (LFrm_E (EImLit lit, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (EImLit lit, ls, fs) # lstk') gs ck] = (
     [GFrmNormal (LFrm_E (EImLit lit, ls, fs) # lstk') gs ck]
   )" |
-  "step tre [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] (Suc n) = (
+  "step tre [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck] = (
     [GFrmNormal (LFrm_E (STOP, ls, fs) # lstk') gs ck]
   )" |
-  "step tre [GFrmNormal (LFrm_E (EList el, ls, fs) # lstk') gs ck] (Suc n) = 
+  "step tre [GFrmNormal (LFrm_E (EList el, ls, fs) # lstk') gs ck] = 
     [GFrmNormal (LFrm_E (EList el, ls, fs) # lstk') gs ck]" |
-  "step tre [GFrmCounterErr] (Suc n) = [GFrmCounterErr]" |
 
-  "step tre _ _ = []"
+  "step tre _ = []"
 
-  by pat_completeness auto
-termination 
-  by lexicographic_order
+  by pat_completeness auto 
+  termination 
+proof-
+  show ?thesis
+  apply(relation  
+  "measure 
+    (\<lambda>x. (case x of 
+           (Inl (_ :: trans_env, gstk :: gstack)) \<Rightarrow> size_of_gstk gstk + 1
+         | (Inr (_ :: trans_env, e :: expr, ec :: ectx, gstk :: gstack)) \<Rightarrow> 
+              size_of_expr e + size_of_ectx ec + 
+              (case (hd gstk) of GFrmNormal lstk gs ck \<Rightarrow> size_of_lstk (tl lstk) | _ \<Rightarrow> 0)
+         ))
+  ")
+    apply (auto simp add: size_of_gstk_def size_of_lstk_def)
+    using size_of_ectx_ge_2
+    apply (simp add: Suc_le_lessD numeral_2_eq_2)
+  proof-
+    fix es lstk' a b xa y
+    assume "(a, b) = lst_find_idx (rev es) is_lit_expr"
+    assume H_xa: "(xa, True) = lst_find_idx (rev es) is_lit_expr" 
+    assume "y"
+    define kk where 
+      "kk = sum_list
+               (map (case_lstack_frame (\<lambda>(e, ls, fs). size_of_expr e) (\<lambda>(blk, ls, fs, cf). size_of_blk blk))
+               lstk')"
+    have H_kk_ge_0: "kk \<ge> 0" using kk_def by simp
+    have H_xa_lt_len: "xa < length (rev es)" 
+      using lst_find_idx0_bound by (metis H_xa lst_find_idx_def minus_eq) 
+    
+    define k1 where "k1 = size_of_expr (es ! (length es - Suc xa))"
+    define k2 where "k2 = sum_list (map size_of_expr (take (length es - Suc xa) es))"
+    define k3 where "k3 = sum_list (map size_of_expr es)"
+    define k4 where "k4 = length es" 
+    have H_k1_ge_0: "k1 \<ge> 0" using k1_def by simp
+    have H_k2_ge_0: "k2 \<ge> 0" using k2_def by simp
+    have H_k3_ge_0: "k3 \<ge> 0" using k3_def by simp
+    have H_k4_ge_0: "k4 \<ge> 0" using k4_def by auto 
+    have H_xa_lt_k4: "xa < k4" using H_xa_lt_len k4_def by auto
+    have H_simp: "k1 + (k2 + k4) + kk - (k4 - xa) = k1 + k2 + kk + xa" 
+      using H_k1_ge_0 H_k2_ge_0 H_k3_ge_0 H_k4_ge_0 H_xa_lt_k4 H_kk_ge_0 by auto 
+    show "size_of_expr (es ! (length es - Suc xa)) +
+       (sum_list (map size_of_expr (take (length es - Suc xa) es)) + length es) +
+       sum_list
+        (map (case_lstack_frame (\<lambda>(e, ls, fs). size_of_expr e) (\<lambda>(blk, ls, fs, cf). size_of_blk blk))
+          lstk') -
+       (length es - xa)
+       < Suc(sum_list (map size_of_expr es) +
+         sum_list
+          (map (case_lstack_frame (\<lambda>(e, ls, fs). size_of_expr e) (\<lambda>(blk, ls, fs, cf). size_of_blk blk))
+            lstk'))"
+      apply (simp flip: kk_def)
+      apply (simp flip: k1_def k2_def k3_def)
+      apply (simp flip: k4_def)
+      apply (simp add: H_simp)
+      apply (simp add: k1_def k2_def k3_def)
+      using k1_def k2_def k3_def size_of_expr_ge_1 arg_list_sizes_sum 
+      using H_xa_lt_k4 k4_def le_imp_less_Suc by blast
+  qed
+qed
 
 (* [] is used to represent error configurations that cannot occur in the execution of well-typed
    expressions and blocks *)
 
-fun multi_step :: "trans_env \<Rightarrow> gstack \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> gstack" where 
-  "multi_step tre gs 0 k = gs" | 
-  "multi_step tre gs (Suc n) k = multi_step tre (step tre gs k) n k" 
+fun multi_step :: "trans_env \<Rightarrow> gstack \<Rightarrow> nat \<Rightarrow> gstack" where 
+  "multi_step tre gs 0 = gs" | 
+  "multi_step tre gs (Suc n) = multi_step tre (step tre gs) n" 
 
 end
